@@ -1,5 +1,5 @@
 /**
-*   
+*
 *   File: Pushover_Driver.groovy
 *   Platform: Hubitat
 *   Modification History:
@@ -16,6 +16,7 @@
 *       2022-08-26 @Seattle              Added [OPEN] and [CLOSE] text substitutions for "<" and ">" as HSM was stripping those characters out
 *       2022-10-05 Dan Ogorchock         Added option to enable/disable debug logging
 *       2022-12-04 Neerav Modi           Added support for new Priority [S] for Lowest Priority (-2) see https://pushover.net/api#priority for details
+*       2023-04-26 Kurt Sanders          Added support for Pushover Glances API to supported watch devices.  Example: [G]^Title^Text¢SubText¢
 *
 *   Inspired by original work for SmartThings by: Zachary Priddy, https://zpriddy.com, me@zpriddy.com
 *
@@ -32,7 +33,7 @@
 *
 *
 */
-def version() {"v1.0.20221204"}
+def version() {"v1.0.20230426"}
 
 metadata {
     definition (name: "Pushover", namespace: "ogiewon", author: "Dan Ogorchock", importUrl: "https://raw.githubusercontent.com/ogiewon/Hubitat/master/Drivers/pushover-notifications.src/pushover-notifications.groovy") {
@@ -40,7 +41,7 @@ metadata {
         capability "Actuator"
         capability "Speech Synthesis"
     }
-    
+
     preferences {
         input("apiKey", "text", title: "API Key:", description: "Pushover API Key")
         input("userKey", "text", title: "User Key:", description: "Pushover User Key")
@@ -69,10 +70,10 @@ def installed() {
 
 def updated() {
     initialize()
-    
+
     if (logEnable) {
-        log.info "Enabling Debug Logging for 30 minutes" 
-        runIn(1800,logsOff)
+        log.info "Enabling Debug Logging for 60 minutes"
+        runIn(3600,logsOff)
     } else {
         unschedule(logsoff)
     }
@@ -86,22 +87,22 @@ def initialize() {
 def getValidated(type){
     if(type=="deviceList"){if (logEnable) log.debug "Generating Device List..."}
     else {if (logEnable) log.debug "Validating Keys..."}
-    
+
     def validated = false
-    
+
     def postBody = [
         token: "$apiKey",
         user: "$userKey",
         device: ""
     ]
-    
+
     def params = [
         uri: "https://api.pushover.net/1/users/validate.json",
         contentType: "application/json",
         requestContentType: "application/x-www-form-urlencoded",
         body: postBody
     ]
-    
+
     if ((apiKey =~ /[A-Za-z0-9]{30}/) && (userKey =~ /[A-Za-z0-9]{30}/)) {
         try{
             httpPost(params){response ->
@@ -123,7 +124,7 @@ def getValidated(type){
         }
         catch (Exception e) {
             log.error "An invalid key was probably entered. PushOver Server Returned: ${e}"
-        } 
+        }
     }
     else {
         // Do not sendPush() here, the user may have intentionally set up bad keys for testing.
@@ -131,7 +132,7 @@ def getValidated(type){
     }
     if(type=="deviceList") return deviceOptions
     return validated
-    
+
 }
 
 def getSoundOptions() {
@@ -149,7 +150,7 @@ def getSoundOptions() {
             myOptions << ["${eachSound.key}":"${eachSound.value}"]
             }
         }
-   	}   
+   	}
     return myOptions
 }
 
@@ -158,15 +159,22 @@ def speak(message) {
 }
 
 def deviceNotification(message) {
-    if(message.startsWith("[S]")){ 
+    def pushoverURI = "https://api.pushover.net/1/messages.json"
+
+    if(message.startsWith("[G]")){
+        pushoverURI = "https://api.pushover.net/1/glances.json"
+        message = message.minus("[G]")
+        if (logEnable) log.debug "Sending Message '${message}' to Pushover Apple Watch..."
+    }
+    if(message.startsWith("[S]")){
         customPriority = "-2"
         message = message.minus("[S]")
-    }    
-    if(message.startsWith("[L]")){ 
+    }
+    if(message.startsWith("[L]")){
         customPriority = "-1"
         message = message.minus("[L]")
     }
-    if(message.startsWith("[N]")){ 
+    if(message.startsWith("[N]")){
         customPriority = "0"
         message = message.minus("[N]")
     }
@@ -179,9 +187,9 @@ def deviceNotification(message) {
         message = message.minus("[E]")
     }
     if(customPriority){ priority = customPriority}
- 
-    def html = "0"    
-    if(message.contains("[HTML]")){ 
+
+    def html = "0"
+    if(message.contains("[HTML]")){
         html = "1"
         message = message.minus("[HTML]")
         if(message.contains("[OPEN]")){
@@ -191,49 +199,58 @@ def deviceNotification(message) {
             message = message.replace("[CLOSE]",">")
         }
     }
-    
-    if((matcher = message =~ /\^(.*?)\^/)){                   
+
+    if((matcher = message =~ /\^(.*?)\^/)){
         message = message.minus("^${matcher[0][1]}^")
         message = message.trim() //trim any whitespace
         customTitle = matcher[0][1]
     }
     if(customTitle){ title = customTitle}
-        
-    if((matcher = message =~ /\#(.*?)\#/)){               
-        message = message.minus("#${matcher[0][1]}#")      
+
+    if((matcher = message =~ /\¢(.*?)\¢/)){
+        message = message.minus("¢${matcher[0][1]}¢")
+        message = message.trim() //trim any whitespace
+        customSubtext = matcher[0][1]
+    }
+    if(customSubtext){ subtext = customSubtext}
+
+    if((matcher = message =~ /\#(.*?)\#/)){
+        message = message.minus("#${matcher[0][1]}#")
         message = message.trim() //trim any whitespace
         customSound = matcher[0][1]
         customSound = customSound.toLowerCase()
     }
     if(customSound){ sound = customSound}
 
-    if((matcher = message =~ /\*(.*?)\*/)){               
-        message = message.minus("*${matcher[0][1]}*")      
+    if((matcher = message =~ /\*(.*?)\*/)){
+        message = message.minus("*${matcher[0][1]}*")
         message = message.trim() //trim any whitespace
         customDevice = matcher[0][1]
-        customDevice = customDevice.toLowerCase()      
+        customDevice = customDevice.toLowerCase()
     }
     if(customDevice){ deviceName = customDevice}
-    
-    if((matcher = message =~ /\§(.*?)\§/)){               
-        message = message.minus("§${matcher[0][1]}§")      
+
+    if((matcher = message =~ /\§(.*?)\§/)){
+        message = message.minus("§${matcher[0][1]}§")
         message = message.trim() //trim any whitespace
         customUrl = matcher[0][1]
     }
     if(customUrl){ url = customUrl}
 
-    if((matcher = message =~ /\¤(.*?)\¤/)){               
-        message = message.minus("¤${matcher[0][1]}¤")      
+    if((matcher = message =~ /\¤(.*?)\¤/)){
+        message = message.minus("¤${matcher[0][1]}¤")
         message = message.trim() //trim any whitespace
-        customUrlTitle = matcher[0][1]   
+        customUrlTitle = matcher[0][1]
     }
-    if(customUrlTitle){ urlTitle = customUrlTitle}    
-    
+    if(customUrlTitle){ urlTitle = customUrlTitle}
+
     // Define the initial postBody keys and values for all messages
     def postBody = [
         token: "$apiKey",
         user: "$userKey",
         message: "${message}",
+        text: "${message}",
+        subtext: subtext,
         title: title,
         priority: priority,
         sound: sound,
@@ -250,7 +267,7 @@ def deviceNotification(message) {
 
     // Prepare the package to be sent
     def params = [
-        uri: "https://api.pushover.net/1/messages.json",
+        uri: pushoverURI,
         contentType: "application/json",
         requestContentType: "application/x-www-form-urlencoded",
         body: postBody
@@ -263,7 +280,7 @@ def deviceNotification(message) {
                 log.error "Received HTTP error ${response.status}. Check your keys!"
             }
             else {
-                if (logEnable) log.debug "Message Received by Pushover Server"
+                if (logEnable) log.debug "Message Received by Pushover Server ${pushoverURI} with response status: ${response.status} and response data ${response.data}"
         }
         }
     }
